@@ -21,6 +21,75 @@ Mappings:
 
 
 Resources:
+  DynatraceApiTokenValidator:
+    Type: AWS::CloudFormation::CustomResource
+    Version: "1.0"
+    Properties:
+      ServiceToken: !GetAtt DynatraceApiTokenValidatorFunction.Arn
+      DynatraceUrl: !Ref DynatraceUrl
+      DynatraceApiKey: !Ref DynatraceApiKey
+
+  DynatraceApiTokenValidatorFunction:
+    DependsOn:
+      - DynatraceApiValidatorFunctionRole
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          import json
+          import cfnresponse
+          from urllib import request
+
+          CFN_ERROR_MESSAGE = "FAILED - Check Dynatrace API credentials. API token needs to include 'Read Configuration' and 'Write Configuration' permissions"
+
+          def lambda_handler(event, context):
+            print(event)
+            if event['RequestType'] == "Delete":
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, {'Reason': 'OK'})
+                return
+            headers = {
+                'Authorization': 'Api-Token ' + event['ResourceProperties']['DynatraceApiKey'],
+                'Content-Type': 'application/json; charset=utf-8'
+            }
+            url = event['ResourceProperties']['DynatraceUrl']
+            if url.endswith('/'):
+                url = url[:-1]
+            try:
+                req = request.Request(url + '/api/config/v1/aws/iamExternalId', headers=headers)
+                response = request.urlopen(req)
+                resp_str = response.read()
+                response_data = json.loads(resp_str)
+                status = cfnresponse.FAILED
+                cfn_response = CFN_ERROR_MESSAGE
+                if response_data['token']:
+                  status = cfnresponse.SUCCESS
+                  cfn_response = "OK"
+                cfnresponse.send(event, context, status, {'Reason': cfn_response})
+                return True
+            except Exception as e:
+                print(e)
+                cfnresponse.send(event, context, cfnresponse.FAILED, {'Reason': CFN_ERROR_MESSAGE + f' Exception: {e}'})
+                return True
+      Handler: index.lambda_handler
+      MemorySize: 128
+      Runtime: python3.7
+      Role: !GetAtt "DynatraceApiValidatorFunctionRole.Arn"
+      Timeout: 15
+
+  DynatraceApiValidatorFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition: {}
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
   DynatraceSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
